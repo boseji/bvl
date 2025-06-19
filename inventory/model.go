@@ -1,4 +1,4 @@
-// types.go - Part of the `inventory` Package
+// model.go - Part of the `inventory` Package
 //
 //     ॐ भूर्भुवः स्वः
 //     तत्स॑वि॒तुर्वरे॑ण्यं॒
