@@ -421,10 +421,10 @@ func DeleteItem(db *sql.DB, id int) error {
 // ResetSequence sets the ID auto-increment
 // to restart from 1001.
 func ResetSequence(db *sql.DB) error {
-	_, err := db.Exec(`
-        UPDATE sqlite_sequence
-        SET seq = 1000
-        WHERE name = 'inventory'`)
+	_, err := db.Exec(
+		fmt.Sprintf("UPDATE sqlite_sequence"+
+			"SET seq = %d"+
+			"WHERE name = 'inventory'", IndexStart))
 	if err != nil {
 		return fmt.Errorf("reset sequence failed: %v", err)
 	}
