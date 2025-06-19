@@ -47,8 +47,11 @@ package inventory
 
 import (
 	"database/sql"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/boseji/bsg/gen"
@@ -201,9 +204,155 @@ func LogRemark(db *sql.DB, id int, message string) {
 	}
 	ts := gen.BST().Format("[2006-01-02 15:04:05]")
 	newRemarks := current + "\n" + fmt.Sprintf("%s %s", ts, message)
-	_, err = db.Exec("UPDATE inventory SET remarks = ? WHERE id = ?", newRemarks, id)
+	_, err = db.Exec("UPDATE inventory SET remarks = ? WHERE id = ?",
+		newRemarks, id)
 	if err != nil {
 		log.Fatalf("Update failed: %v", err)
 	}
 	fmt.Printf("Log appended to item %d\n", id)
+}
+
+// ExportCSV allows to transform all the Data into a CSV file.
+func ExportCSV(db *sql.DB, csvFile string) {
+	rows, err := db.Query("SELECT id, description, location, status, remarks" +
+		" FROM inventory ORDER BY id")
+	if err != nil {
+		log.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	f, err := os.Create(csvFile)
+	if err != nil {
+		log.Fatalf("Failed to create CSV: %v", err)
+	}
+	defer f.Close()
+
+	writer := csv.NewWriter(f)
+	defer writer.Flush()
+
+	writer.Write([]string{"id", "description", "location", "status", "remarks"})
+
+	count := 0
+	for rows.Next() {
+		var item Item
+		err := rows.Scan(&item.ID, &item.Description, &item.Location,
+			&item.Status, &item.Remarks)
+		if err != nil {
+			log.Fatalf("Scan failed: %v", err)
+		}
+		record := []string{
+			fmt.Sprintf("%d", item.ID),
+			item.Description,
+			item.Location,
+			item.Status,
+			item.Remarks,
+		}
+		writer.Write(record)
+		count++
+	}
+	fmt.Printf("Exported %d rows to %s\n", count, csvFile)
+}
+
+// ImportCSV allows the data to be read back from a CSV file
+func ImportCSV(db *sql.DB, csvFile string) {
+	f, err := os.Open(csvFile)
+	if err != nil {
+		log.Fatalf("Failed to open CSV: %v", err)
+	}
+	defer f.Close()
+
+	reader := csv.NewReader(f)
+	records, err := reader.ReadAll()
+	if err != nil {
+		log.Fatalf("Failed to read CSV: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Fatalf("Transaction failed: %v", err)
+	}
+
+	for i, row := range records {
+		if i == 0 {
+			continue // header
+		}
+		_, err := tx.Exec("INSERT OR REPLACE INTO inventory ("+
+			"id, description, location, status, remarks)"+
+			"VALUES (?, ?, ?, ?, ?)",
+			row[0], row[1], row[2], row[3], row[4])
+		if err != nil {
+			log.Fatalf("Import failed at row %d: %v", i, err)
+		}
+	}
+	err = tx.Commit()
+	if err != nil {
+		log.Fatalf("Commit failed: %v", err)
+	}
+	fmt.Printf("Imported %d records from %s\n", len(records)-1, csvFile)
+}
+
+// ExportJSONFile would allow the full database to be exported as a JSON file
+func ExportJSONFile(db *sql.DB, jsonFile string) {
+	rows, err := db.Query("SELECT id, description, location, status, remarks FROM inventory ORDER BY id")
+	if err != nil {
+		log.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		var item Item
+		err := rows.Scan(&item.ID, &item.Description, &item.Location, &item.Status, &item.Remarks)
+		if err != nil {
+			log.Fatalf("Scan failed: %v", err)
+		}
+		items = append(items, item)
+	}
+
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		log.Fatalf("JSON marshal failed: %v", err)
+	}
+
+	err = os.WriteFile(jsonFile, data, 0644)
+	if err != nil {
+		log.Fatalf("Failed to write JSON file: %v", err)
+	}
+
+	fmt.Printf("Exported %d items to %s\n", len(items), jsonFile)
+}
+
+// ImportJSONFile can be used to Import a set of records into the database
+// using a .JSON file.
+func ImportJSONFile(db *sql.DB, jsonFile string) {
+	data, err := os.ReadFile(jsonFile)
+	if err != nil {
+		log.Fatalf("Failed to read JSON file: %v", err)
+	}
+
+	var items []Item
+	err = json.Unmarshal(data, &items)
+	if err != nil {
+		log.Fatalf("JSON unmarshal failed: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		log.Fatalf("Transaction failed: %v", err)
+	}
+
+	for _, item := range items {
+		_, err := tx.Exec(`INSERT OR REPLACE INTO inventory (id, description, location, status, remarks)
+            VALUES (?, ?, ?, ?, ?)`, item.ID, item.Description, item.Location, item.Status, item.Remarks)
+		if err != nil {
+			log.Fatalf("Import failed for item %d: %v", item.ID, err)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		log.Fatalf("Commit failed: %v", err)
+	}
+
+	fmt.Printf("Imported %d items from %s\n", len(items), jsonFile)
 }
