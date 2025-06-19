@@ -14,6 +14,10 @@
 
 ***एक रचनात्मक भारतीय उत्पाद ।***
 
+<p align="center">
+  <img src="docs/assets/icon-full-color-mini.png" alt="Inventory CLI Logo">
+</p>
+
 ## `bvl` - Boseji's Inventory Management Program
 
 Easy to use and useful stock, goods and materials handling software designed in `Golang`.
