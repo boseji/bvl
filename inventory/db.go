@@ -87,3 +87,53 @@ func ListAllItems(db *sql.DB) {
 			item.Location, item.Status, item.Remarks)
 	}
 }
+
+func AddItem(db *sql.DB, desc, loc, status, remarks string) {
+	stmt, err := db.Prepare("INSERT INTO inventory (" +
+		"description, location, status, remarks)" +
+		" VALUES (?, ?, ?, ?)")
+	if err != nil {
+		log.Fatalf("Prepare failed: %v", err)
+	}
+	defer stmt.Close()
+
+	res, err := stmt.Exec(desc, loc, status, remarks)
+	if err != nil {
+		log.Fatalf("Insert failed: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	fmt.Printf("Item added with ID %d\n", id)
+}
+
+func EditItem(db *sql.DB, id int, desc, loc, status, remarks string) {
+	parts := []string{}
+	args := []interface{}{}
+	if desc != "" {
+		parts = append(parts, "description = ?")
+		args = append(args, desc)
+	}
+	if loc != "" {
+		parts = append(parts, "location = ?")
+		args = append(args, loc)
+	}
+	if status != "" {
+		parts = append(parts, "status = ?")
+		args = append(args, status)
+	}
+	if remarks != "" {
+		parts = append(parts, "remarks = ?")
+		args = append(args, remarks)
+	}
+	if len(parts) == 0 {
+		fmt.Println("Nothing to update.")
+		return
+	}
+	args = append(args, id)
+	stmt := fmt.Sprintf("UPDATE inventory SET %s WHERE id = ?",
+		strings.Join(parts, ", "))
+	_, err := db.Exec(stmt, args...)
+	if err != nil {
+		log.Fatalf("Update failed: %v", err)
+	}
+	fmt.Printf("Item %d updated\n", id)
+}
