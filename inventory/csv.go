@@ -49,40 +49,36 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"fmt"
-	"log"
 	"os"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
-// ExportCSV allows to transform all the Data into a CSV file.
-func ExportCSV(db *sql.DB, csvFile string) {
-	rows, err := db.Query("SELECT id, description, location, status, remarks" +
-		" FROM inventory ORDER BY id")
+// ExportCSV writes all inventory items to CSV file.
+//
+// Fields:
+// id, description, location, status, remarks
+//
+// Returns error if writing fails.
+func ExportCSV(db *sql.DB, filename string) error {
+	items, err := ListAll(db)
 	if err != nil {
-		log.Fatalf("Query failed: %v", err)
+		return fmt.Errorf("export csv failed: %v", err)
 	}
-	defer rows.Close()
 
-	f, err := os.Create(csvFile)
+	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatalf("Failed to create CSV: %v", err)
+		return fmt.Errorf("could not create file: %v", err)
 	}
 	defer f.Close()
 
 	writer := csv.NewWriter(f)
 	defer writer.Flush()
 
-	writer.Write([]string{"id", "description", "location", "status", "remarks"})
+	header := []string{
+		"id", "description", "location", "status", "remarks",
+	}
+	writer.Write(header)
 
-	count := 0
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description, &item.Location,
-			&item.Status, &item.Remarks)
-		if err != nil {
-			log.Fatalf("Scan failed: %v", err)
-		}
+	for _, item := range items {
 		record := []string{
 			fmt.Sprintf("%d", item.ID),
 			item.Description,
@@ -91,45 +87,98 @@ func ExportCSV(db *sql.DB, csvFile string) {
 			item.Remarks,
 		}
 		writer.Write(record)
-		count++
 	}
-	fmt.Printf("Exported %d rows to %s\n", count, csvFile)
+
+	fmt.Printf("exported %d items to %s\n", len(items), filename)
+	return nil
 }
 
-// ImportCSV allows the data to be read back from a CSV file
-func ImportCSV(db *sql.DB, csvFile string) {
-	f, err := os.Open(csvFile)
+// ImportCSV reads inventory items from CSV file.
+//
+// Existing records with same ID will be replaced.
+// CSV must have same field order as exported.
+//
+// Returns error if reading fails.
+func ImportCSV(db *sql.DB, filename string) error {
+	f, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("Failed to open CSV: %v", err)
+		return fmt.Errorf("could not open file: %v", err)
 	}
 	defer f.Close()
 
 	reader := csv.NewReader(f)
 	records, err := reader.ReadAll()
 	if err != nil {
-		log.Fatalf("Failed to read CSV: %v", err)
+		return fmt.Errorf("could not read csv: %v", err)
+	}
+
+	if len(records) < 1 {
+		return fmt.Errorf("csv is empty")
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
-		log.Fatalf("Transaction failed: %v", err)
+		return fmt.Errorf("transaction failed: %v", err)
 	}
 
 	for i, row := range records {
 		if i == 0 {
-			continue // header
+			continue // skip header
 		}
-		_, err := tx.Exec("INSERT OR REPLACE INTO inventory ("+
-			"id, description, location, status, remarks)"+
-			"VALUES (?, ?, ?, ?, ?)",
+
+		if len(row) < 5 {
+			tx.Rollback()
+			return fmt.Errorf(
+				"invalid csv row %d: expected 5 fields", i)
+		}
+
+		_, err := tx.Exec(`
+            INSERT OR REPLACE INTO inventory
+            (id, description, location, status, remarks)
+            VALUES (?, ?, ?, ?, ?)`,
 			row[0], row[1], row[2], row[3], row[4])
 		if err != nil {
-			log.Fatalf("Import failed at row %d: %v", i, err)
+			tx.Rollback()
+			return fmt.Errorf(
+				"import failed at row %d: %v", i, err)
 		}
 	}
+
 	err = tx.Commit()
 	if err != nil {
-		log.Fatalf("Commit failed: %v", err)
+		return fmt.Errorf("commit failed: %v", err)
 	}
-	fmt.Printf("Imported %d records from %s\n", len(records)-1, csvFile)
+
+	fmt.Printf(
+		"imported %d items from %s\n", len(records)-1, filename)
+	return nil
+}
+
+// ViewCSV displays CSV file to stdout.
+//
+// No database required.
+// Useful for debugging or piping to jq.
+func ViewCSV(filename string) error {
+	f, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("could not open file: %v", err)
+	}
+	defer f.Close()
+
+	reader := csv.NewReader(f)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return fmt.Errorf("could not read csv: %v", err)
+	}
+
+	for i, row := range records {
+		if i == 0 {
+			fmt.Println("--- CSV Header ---")
+		}
+		fmt.Printf("%d: %s\n", i, row)
+	}
+
+	fmt.Printf(
+		"displayed %d rows from %s\n", len(records), filename)
+	return nil
 }
