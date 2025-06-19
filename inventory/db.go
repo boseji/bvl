@@ -47,7 +47,6 @@ package inventory
 
 import (
 	"database/sql"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -212,85 +211,6 @@ func LogRemark(db *sql.DB, id int, message string) {
 	fmt.Printf("Log appended to item %d\n", id)
 }
 
-// ExportCSV allows to transform all the Data into a CSV file.
-func ExportCSV(db *sql.DB, csvFile string) {
-	rows, err := db.Query("SELECT id, description, location, status, remarks" +
-		" FROM inventory ORDER BY id")
-	if err != nil {
-		log.Fatalf("Query failed: %v", err)
-	}
-	defer rows.Close()
-
-	f, err := os.Create(csvFile)
-	if err != nil {
-		log.Fatalf("Failed to create CSV: %v", err)
-	}
-	defer f.Close()
-
-	writer := csv.NewWriter(f)
-	defer writer.Flush()
-
-	writer.Write([]string{"id", "description", "location", "status", "remarks"})
-
-	count := 0
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description, &item.Location,
-			&item.Status, &item.Remarks)
-		if err != nil {
-			log.Fatalf("Scan failed: %v", err)
-		}
-		record := []string{
-			fmt.Sprintf("%d", item.ID),
-			item.Description,
-			item.Location,
-			item.Status,
-			item.Remarks,
-		}
-		writer.Write(record)
-		count++
-	}
-	fmt.Printf("Exported %d rows to %s\n", count, csvFile)
-}
-
-// ImportCSV allows the data to be read back from a CSV file
-func ImportCSV(db *sql.DB, csvFile string) {
-	f, err := os.Open(csvFile)
-	if err != nil {
-		log.Fatalf("Failed to open CSV: %v", err)
-	}
-	defer f.Close()
-
-	reader := csv.NewReader(f)
-	records, err := reader.ReadAll()
-	if err != nil {
-		log.Fatalf("Failed to read CSV: %v", err)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatalf("Transaction failed: %v", err)
-	}
-
-	for i, row := range records {
-		if i == 0 {
-			continue // header
-		}
-		_, err := tx.Exec("INSERT OR REPLACE INTO inventory ("+
-			"id, description, location, status, remarks)"+
-			"VALUES (?, ?, ?, ?, ?)",
-			row[0], row[1], row[2], row[3], row[4])
-		if err != nil {
-			log.Fatalf("Import failed at row %d: %v", i, err)
-		}
-	}
-	err = tx.Commit()
-	if err != nil {
-		log.Fatalf("Commit failed: %v", err)
-	}
-	fmt.Printf("Imported %d records from %s\n", len(records)-1, csvFile)
-}
-
 // ExportJSONFile would allow the full database to be exported as a JSON file
 func ExportJSONFile(db *sql.DB, jsonFile string) {
 	rows, err := db.Query("SELECT id, description, location, status, remarks FROM inventory ORDER BY id")
@@ -355,4 +275,108 @@ func ImportJSONFile(db *sql.DB, jsonFile string) {
 	}
 
 	fmt.Printf("Imported %d items from %s\n", len(items), jsonFile)
+}
+
+// ExportJSONstr allows to export the complete database as a JSON string.
+func ExportJSONstr(db *sql.DB) (string, error) {
+	rows, err := db.Query("SELECT id, description, location, status, remarks" +
+		" FROM inventory ORDER BY id")
+	if err != nil {
+		return "", fmt.Errorf("query failed: %v", err)
+	}
+	defer rows.Close()
+
+	var items []Item
+	for rows.Next() {
+		var item Item
+		err := rows.Scan(&item.ID, &item.Description, &item.Location,
+			&item.Status, &item.Remarks)
+		if err != nil {
+			return "", fmt.Errorf("scan failed: %v", err)
+		}
+		items = append(items, item)
+	}
+
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("JSON marshal failed: %v", err)
+	}
+
+	return string(data), nil
+}
+
+// ImportJSONstr helps to import a bulk of Records from a JSON array
+// supplied as a string.
+func ImportJSONstr(db *sql.DB, jsonStr string) error {
+	var items []Item
+	err := json.Unmarshal([]byte(jsonStr), &items)
+	if err != nil {
+		return fmt.Errorf("JSON unmarshal failed: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("transaction failed: %v", err)
+	}
+
+	for _, item := range items {
+		_, err := tx.Exec("INSERT OR REPLACE INTO inventory ("+
+			"id, description, location, status, remarks)"+
+			"VALUES (?, ?, ?, ?, ?)",
+			item.ID, item.Description, item.Location, item.Status, item.Remarks)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("import failed for item %d: %v", item.ID, err)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("commit failed: %v", err)
+	}
+
+	return nil
+}
+
+// ExportJSONByID finds outputs a JSON sting for a given ID value of the
+// Database provided it exists.
+func ExportJSONByID(db *sql.DB, id int) (string, error) {
+	var item Item
+	row := db.QueryRow("SELECT id, description, location, status, remarks"+
+		" FROM inventory WHERE id = ?", id)
+	err := row.Scan(&item.ID, &item.Description, &item.Location, &item.Status,
+		&item.Remarks)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("Item with ID %d not found", id)
+		}
+		return "", fmt.Errorf("query failed: %v", err)
+	}
+
+	data, err := json.MarshalIndent(item, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("JSON marshal failed: %v", err)
+	}
+
+	return string(data), nil
+}
+
+// ImportJSONRecord helps to add or modify a row in database. This is
+// done on the basis of the supplied ID value.
+func ImportJSONRecord(db *sql.DB, jsonStr string) error {
+	var item Item
+	err := json.Unmarshal([]byte(jsonStr), &item)
+	if err != nil {
+		return fmt.Errorf("JSON unmarshal failed: %v", err)
+	}
+
+	_, err = db.Exec("INSERT OR REPLACE INTO inventory ("+
+		"id, description, location, status, remarks)"+
+		"VALUES (?, ?, ?, ?, ?)",
+		item.ID, item.Description, item.Location, item.Status, item.Remarks)
+	if err != nil {
+		return fmt.Errorf("insert/update failed for item %d: %v", item.ID, err)
+	}
+
+	return nil
 }
