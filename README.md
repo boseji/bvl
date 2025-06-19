@@ -110,9 +110,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ---
-
-## Attribution
-
-This project was developed in collaboration with [ChatGPT 4o model](https://openai.com/chatgpt/overview/).
-
----

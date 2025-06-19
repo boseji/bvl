@@ -55,6 +55,8 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// OpenDB creates the Database connection. It would also create the
+// database if one does not exists.
 func OpenDB(dbFile string) *sql.DB {
 	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
@@ -66,6 +68,7 @@ func OpenDB(dbFile string) *sql.DB {
 	return db
 }
 
+// List all item just list all the items in the Database.
 func ListAllItems(db *sql.DB) {
 	rows, err := db.Query("SELECT id, description, location, status, remarks" +
 		" FROM inventory ORDER BY id")
@@ -89,6 +92,7 @@ func ListAllItems(db *sql.DB) {
 	}
 }
 
+// AddItem is used to add a new row in the database
 func AddItem(db *sql.DB, desc, loc, status, remarks string) {
 	stmt, err := db.Prepare("INSERT INTO inventory (" +
 		"description, location, status, remarks)" +
@@ -98,7 +102,11 @@ func AddItem(db *sql.DB, desc, loc, status, remarks string) {
 	}
 	defer stmt.Close()
 
-	res, err := stmt.Exec(desc, loc, status, remarks)
+	// Log like look
+	ts := gen.BST().Format("[2006-01-02 15:04:05]")
+	newRemarks := fmt.Sprintf("%s %s", ts, remarks)
+
+	res, err := stmt.Exec(desc, loc, status, newRemarks)
 	if err != nil {
 		log.Fatalf("Insert failed: %v", err)
 	}
@@ -106,6 +114,9 @@ func AddItem(db *sql.DB, desc, loc, status, remarks string) {
 	fmt.Printf("Item added with ID %d\n", id)
 }
 
+// EditItem helps to alter a particular part of the row in Database.
+// If a particular field need not be changed then it can be left blank
+// and the same will be skipped in the update command.
 func EditItem(db *sql.DB, id int, desc, loc, status, remarks string) {
 	parts := []string{}
 	args := []interface{}{}
@@ -139,6 +150,7 @@ func EditItem(db *sql.DB, id int, desc, loc, status, remarks string) {
 	fmt.Printf("Item %d updated\n", id)
 }
 
+// DeleteItem helps to delete an item based on its ID
 func DeleteItem(db *sql.DB, id int) {
 	_, err := db.Exec("DELETE FROM inventory WHERE id = ?", id)
 	if err != nil {
@@ -147,6 +159,7 @@ func DeleteItem(db *sql.DB, id int) {
 	fmt.Printf("Item %d deleted\n", id)
 }
 
+// LogRemark helps to add a message like a Log into the Remarks field
 func LogRemark(db *sql.DB, id int, message string) {
 	var current string
 	row := db.QueryRow("SELECT remarks FROM inventory WHERE id = ?", id)
