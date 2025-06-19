@@ -51,7 +51,7 @@ Easy way to create the SQLite database:
 sqlite3 inventory.db < migrations/migration.sql
 ```
 
-Index Reset:
+Index `id` field value Reset/Initialization:
 
 ```sql
 -- Initialize AUTOINCREMENT sequence to start at 1001
