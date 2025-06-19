@@ -45,6 +45,13 @@
 
 package inventory
 
+import (
+	"fmt"
+	"strings"
+
+	"github.com/boseji/bsg/gen"
+)
+
 // Item stores each row in the Database
 type Item struct {
 	ID          int    `json:"id"`
@@ -52,4 +59,30 @@ type Item struct {
 	Location    string `json:"location"`
 	Status      string `json:"status"`
 	Remarks     string `json:"remarks"`
+}
+
+// FormatRemarks returns the remarks text formatted
+// with timestamp-style per line.
+//
+// Example output:
+// [2025-06-20 16:22] message one
+// [2025-06-21 09:15] message two
+func (item *Item) FormatRemarks() string {
+	lines := []string{}
+	for _, line := range strings.Split(item.Remarks, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			// already formatted
+			lines = append(lines, line)
+		} else {
+			// add timestamp prefix
+			t := gen.BST().Format("2006-01-02 15:04")
+			formatted := fmt.Sprintf("[%s] %s", t, line)
+			lines = append(lines, formatted)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
