@@ -407,6 +407,24 @@ func EditItem(db *sql.DB, item Item) error {
 	return nil
 }
 
+// AppendItem inserts a new item if it does not exist,
+// or replaces an existing item with the same ID.
+//
+// Used by JSON import, CSV import and CLI.
+func AppendItem(db *sql.DB, item Item) error {
+	_, err := db.Exec(`
+        INSERT OR REPLACE INTO inventory
+        (id, description, location, status, remarks)
+        VALUES (?, ?, ?, ?, ?)`,
+		item.ID, item.Description,
+		item.Location, item.Status, item.Remarks)
+	if err != nil {
+		return fmt.Errorf(
+			"insert or replace failed: %v", err)
+	}
+	return nil
+}
+
 // DeleteItem deletes an Item by ID.
 func DeleteItem(db *sql.DB, id int) error {
 	_, err := db.Exec(`
