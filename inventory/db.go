@@ -61,6 +61,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/boseji/bsg/gen"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -126,36 +127,120 @@ func AppendItem(exec Execer, item Item) error {
         (id, description, location, status, remarks)
         VALUES (?, ?, ?, ?, ?)`,
 		item.ID, item.Description, item.Location,
-		item.Status, item.Remarks)
+		item.Status, item.FormatRemarks())
 	if err != nil {
 		return fmt.Errorf("insert or replace failed: %v", err)
 	}
 	return nil
 }
 
-// AddItem inserts a new item. The ID is auto-assigned.
+// AppendRemarksEntry appends a timestamped entry to remarks.
+//
+// The new line format is:
+// [YYYY-MM-DD HH:MM] message
+func AppendRemarksEntry(exec Execer, id int, message string) error {
+	t := gen.BST().Format("2006-01-02 15:04")
+	formatted := fmt.Sprintf("[%s] %s", t, message)
+
+	// Appends new entry to remarks field:
+	// COALESCE(remarks, '') → ensure string (not null)
+	// char(10) → newline character
+	// '||' → SQLite concat
+	// Result: remarks = old + '\n' + new entry
+	_, err := exec.Exec(`
+        UPDATE inventory
+        SET remarks = 
+            COALESCE(remarks, '') || char(10) || ?
+        WHERE id = ?`,
+		formatted, id)
+	if err != nil {
+		return fmt.Errorf("append to remarks failed: %v", err)
+	}
+	return nil
+}
+
+// AddItem inserts a new item into the inventory table.
+//
+// The ID is assigned automatically (auto-increment).
+// The remarks field is always stored in timestamped format
+// by calling item.FormatRemarks().
+//
+// Usage:
+//
+//	item := Item{
+//	    Description: "New inverter",
+//	    Location:    "Warehouse 1",
+//	    Status:      "Operational",
+//	    Remarks:     "installed and tested",
+//	}
+//	err := AddItem(tx, item)
+//
+// Resulting remarks field:
+//
+//	[2025-06-20 16:45] installed and tested
+//
+// Notes:
+// - If used inside a transaction, pass tx as exec
+// - If using plain db connection, pass db as exec
+// - Remarks will always follow consistent format
 func AddItem(exec Execer, item Item) error {
 	_, err := exec.Exec(`
         INSERT INTO inventory
         (description, location, status, remarks)
         VALUES (?, ?, ?, ?)`,
 		item.Description, item.Location,
-		item.Status, item.Remarks)
+		item.Status, item.FormatRemarks())
 	if err != nil {
 		return fmt.Errorf("insert failed: %v", err)
 	}
 	return nil
 }
 
-// EditItem updates all fields of the item with the given ID.
+// EditItem updates the item's fields (description, location, status)
+// and appends the new remarks text to the existing remarks field.
+//
+// Remarks field acts as an append-only log:
+//   - Previous remarks are preserved
+//   - New entry is appended with timestamp format:
+//     [YYYY-MM-DD HH:MM] message
+//
+// This function does not load existing remarks in Go;
+// it performs the append using SQL:
+//
+//	SET remarks = COALESCE(remarks, '') || char(10) || ?
+//
+// Usage:
+//
+//	item := Item{
+//	    ID: 1002,
+//	    Description: "Updated inverter",
+//	    Location:    "Warehouse 3",
+//	    Status:      "Operational",
+//	    Remarks:     "maintenance check completed",
+//	}
+//	err := EditItem(tx, item)
+//
+// Resulting remarks field:
+//
+//	(previous remarks)
+//	[2025-06-20 16:22] maintenance check completed
+//
+// Notes:
+// - If item ID does not exist, no rows are updated
+// - If used inside transaction (tx), pass tx as exec
+// - To append a single new log entry, use AppendRemarksEntry()
+// - To display remarks nicely, use item.FormatRemarks()
 func EditItem(exec Execer, item Item) error {
 	_, err := exec.Exec(`
         UPDATE inventory
         SET description = ?, location = ?,
-            status = ?, remarks = ?
+            status = ?,
+            remarks = COALESCE(remarks, '') || char(10) || ?
         WHERE id = ?`,
 		item.Description, item.Location,
-		item.Status, item.Remarks, item.ID)
+		item.Status,
+		item.FormatRemarks(),
+		item.ID)
 	if err != nil {
 		return fmt.Errorf("update failed: %v", err)
 	}
