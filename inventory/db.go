@@ -51,6 +51,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/boseji/bsg/gen"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -136,4 +137,28 @@ func EditItem(db *sql.DB, id int, desc, loc, status, remarks string) {
 		log.Fatalf("Update failed: %v", err)
 	}
 	fmt.Printf("Item %d updated\n", id)
+}
+
+func DeleteItem(db *sql.DB, id int) {
+	_, err := db.Exec("DELETE FROM inventory WHERE id = ?", id)
+	if err != nil {
+		log.Fatalf("Delete failed: %v", err)
+	}
+	fmt.Printf("Item %d deleted\n", id)
+}
+
+func LogRemark(db *sql.DB, id int, message string) {
+	var current string
+	row := db.QueryRow("SELECT remarks FROM inventory WHERE id = ?", id)
+	err := row.Scan(&current)
+	if err != nil {
+		log.Fatalf("Query failed: %v", err)
+	}
+	ts := gen.BST().Format("[2006-01-02 15:04:05]")
+	newRemarks := current + "\n" + fmt.Sprintf("%s %s", ts, message)
+	_, err = db.Exec("UPDATE inventory SET remarks = ? WHERE id = ?", newRemarks, id)
+	if err != nil {
+		log.Fatalf("Update failed: %v", err)
+	}
+	fmt.Printf("Log appended to item %d\n", id)
 }
