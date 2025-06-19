@@ -1,0 +1,276 @@
+// SPDX-License-Identifier: GPL-2.0-only
+//
+// Inventory CLI - DB Access
+// Copyright (C) 2025 Abhijit Bose
+//
+// Provides all database access functions for the Inventory CLI tool.
+//
+// Follows these principles:
+// - One function = one purpose
+// - All lines <= 80 characters
+// - All functions fully documented for GoDocs
+// - No JSON/CSV here (only core DB CRUD)
+//
+
+package inventory
+
+import (
+    "database/sql"
+    "fmt"
+    "log"
+
+    _ "github.com/mattn/go-sqlite3"
+)
+
+//
+// OpenDB opens (or creates) the SQLite database at dbFile.
+//
+// It ensures the inventory table is created, and initializes the
+// sequence to 1000 if missing.
+//
+// Returns an open *sql.DB handle.
+//
+func OpenDB(dbFile string) *sql.DB {
+    db, err := sql.Open("sqlite3", dbFile)
+    if err != nil {
+        log.Fatalf("Failed to open database: %v", err)
+    }
+
+    _, err = db.Exec(`
+    CREATE TABLE IF NOT EXISTS inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        description TEXT,
+        location TEXT,
+        status TEXT,
+        remarks TEXT
+    );`)
+    if err != nil {
+        log.Fatalf("Failed to create table: %v", err)
+    }
+
+    _, err = db.Exec(`
+    INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'inventory', 1000
+    WHERE NOT EXISTS (
+        SELECT 1 FROM sqlite_sequence WHERE name = 'inventory'
+    );`)
+    if err != nil {
+        log.Printf("Could not init sequence: %v", err)
+    }
+
+    return db
+}
+
+//
+// GetItemByID returns a single Item by its ID.
+//
+// If not found, returns an error.
+//
+func GetItemByID(db *sql.DB, id int) (Item, error) {
+    var item Item
+    row := db.QueryRow(`
+        SELECT id, description, location, status, remarks
+        FROM inventory WHERE id = ?`, id)
+    err := row.Scan(
+        &item.ID, &item.Description, &item.Location,
+        &item.Status, &item.Remarks)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return item, fmt.Errorf("Item %d not found", id)
+        }
+        return item, fmt.Errorf("Query failed: %v", err)
+    }
+    return item, nil
+}
+
+//
+// SearchItems performs full-text search across:
+// Description, Location, Status.
+//
+// Returns all matching Items.
+//
+func SearchItems(db *sql.DB, search string) ([]Item, error) {
+    like := "%" + search + "%"
+    rows, err := db.Query(`
+        SELECT id, description, location, status, remarks
+        FROM inventory
+        WHERE description LIKE ?
+           OR location LIKE ?
+           OR status LIKE ?
+        ORDER BY id`, like, like, like)
+    if err != nil {
+        return nil, fmt.Errorf("Search query failed: %v", err)
+    }
+    defer rows.Close()
+
+    var items []Item
+    for rows.Next() {
+        var item Item
+        err := rows.Scan(
+            &item.ID, &item.Description, &item.Location,
+            &item.Status, &item.Remarks)
+        if err != nil {
+            return nil, fmt.Errorf("Scan failed: %v", err)
+        }
+        items = append(items, item)
+    }
+    return items, nil
+}
+
+
+//
+// ListItemsPaged returns up to limit Items,
+// starting after given ID (afterID).
+//
+// Useful for paging through large inventories.
+//
+func ListItemsPaged(
+    db *sql.DB, afterID int, limit int) ([]Item, error) {
+
+    rows, err := db.Query(`
+        SELECT id, description, location, status, remarks
+        FROM inventory
+        WHERE id > ?
+        ORDER BY id
+        LIMIT ?`, afterID, limit)
+    if err != nil {
+        return nil, fmt.Errorf("Paged query failed: %v", err)
+    }
+    defer rows.Close()
+
+    var items []Item
+    for rows.Next() {
+        var item Item
+        err := rows.Scan(
+            &item.ID, &item.Description, &item.Location,
+            &item.Status, &item.Remarks)
+        if err != nil {
+            return nil, fmt.Errorf("Scan failed: %v", err)
+        }
+        items = append(items, item)
+    }
+    return items, nil
+}
+
+//
+// ItemIterator streams matching records one-by-one.
+//
+// Provides: Next(), Close().
+//
+type ItemIterator struct {
+    rows *sql.Rows
+}
+
+//
+// NewItemIterator creates an iterator matching WHERE clause.
+//
+// Example:
+//   it, err := NewItemIterator(db, "WHERE status LIKE ?", "%Available%")
+//
+func NewItemIterator(
+    db *sql.DB, whereClause string, args ...interface{},
+) (*ItemIterator, error) {
+
+    query := `
+        SELECT id, description, location, status, remarks
+        FROM inventory `
+    if whereClause != "" {
+        query += whereClause
+    }
+    query += " ORDER BY id"
+
+    rows, err := db.Query(query, args...)
+    if err != nil {
+        return nil, fmt.Errorf("Iterator query failed: %v", err)
+    }
+
+    return &ItemIterator{rows: rows}, nil
+}
+
+//
+// Next returns next Item from iterator.
+//
+// ok=false when no more rows.
+// Always call Close() after use.
+//
+func (it *ItemIterator) Next() (Item, bool, error) {
+    var item Item
+    if it.rows.Next() {
+        err := it.rows.Scan(
+            &item.ID, &item.Description, &item.Location,
+            &item.Status, &item.Remarks)
+        if err != nil {
+            return item, false, fmt.Errorf("Iterator scan failed: %v", err)
+        }
+        return item, true, nil
+    }
+    return item, false, nil
+}
+
+//
+// Close closes the iterator.
+//
+func (it *ItemIterator) Close() error {
+    return it.rows.Close()
+}
+
+//
+// AddItem inserts a new Item.
+//
+func AddItem(db *sql.DB, item Item) error {
+    _, err := db.Exec(`
+        INSERT INTO inventory
+        (description, location, status, remarks)
+        VALUES (?, ?, ?, ?)`,
+        item.Description, item.Location,
+        item.Status, item.Remarks)
+    if err != nil {
+        return fmt.Errorf("Insert failed: %v", err)
+    }
+    return nil
+}
+
+//
+// EditItem updates an existing Item.
+//
+func EditItem(db *sql.DB, item Item) error {
+    _, err := db.Exec(`
+        UPDATE inventory
+        SET description = ?, location = ?,
+            status = ?, remarks = ?
+        WHERE id = ?`,
+        item.Description, item.Location,
+        item.Status, item.Remarks, item.ID)
+    if err != nil {
+        return fmt.Errorf("Update failed: %v", err)
+    }
+    return nil
+}
+
+//
+// DeleteItem deletes an Item by ID.
+//
+func DeleteItem(db *sql.DB, id int) error {
+    _, err := db.Exec(`
+        DELETE FROM inventory
+        WHERE id = ?`, id)
+    if err != nil {
+        return fmt.Errorf("Delete failed: %v", err)
+    }
+    return nil
+}
+
+//
+// ResetSequence sets the ID autoincrement
+// to restart from 1001.
+//
+func ResetSequence(db *sql.DB) error {
+    _, err := db.Exec(`
+        UPDATE sqlite_sequence
+        SET seq = 1000
+        WHERE name = 'inventory'`)
+    if err != nil {
+        return fmt.Errorf("Reset sequence failed: %v", err)
+    }
+    return nil
+}
