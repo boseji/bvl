@@ -20,6 +20,8 @@
 
 ## `bvl` - Boseji's Inventory Management Program
 
+[![GitHub license](https://img.shields.io/github/license/boseji/bvl)](LICENSE.txt)
+
 Easy to use and useful stock, goods and materials handling software designed in `Golang`.
 
 ## License
