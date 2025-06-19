@@ -55,6 +55,11 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+const (
+	// Starting value of the Index
+	IndexStart = 1000
+)
+
 // OpenDB creates the Database connection. It would also create the
 // database if one does not exists.
 func OpenDB(dbFile string) *sql.DB {
@@ -63,7 +68,34 @@ func OpenDB(dbFile string) *sql.DB {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	// TODO: Add Pre-processing Steps
+	// Create the DB if It does not exists
+	_, err = db.Exec(`
+    CREATE TABLE IF NOT EXISTS inventory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        description TEXT,
+        location TEXT,
+        status TEXT,
+        remarks TEXT
+    );
+    `)
+	if err != nil {
+		log.Fatalf("Failed to create table: %v", err)
+	}
+
+	// Generate Query:
+	// INSERT INTO sqlite_sequence (name, seq)
+	// SELECT 'inventory', 1000
+	// WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'inventory')
+	queryStr := "INSERT INTO sqlite_sequence (name, seq)" +
+		fmt.Sprintf("SELECT 'inventory', %d", IndexStart) +
+		"WHERE NOT EXISTS (" +
+		"SELECT 1 FROM sqlite_sequence WHERE name = 'inventory')"
+
+	// Create the Index start if one does not exists
+	_, err = db.Exec(queryStr)
+	if err != nil {
+		log.Printf("Note: could not init sequence: %v", err)
+	}
 
 	return db
 }
