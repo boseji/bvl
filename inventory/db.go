@@ -77,12 +77,106 @@ type Execer interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
 }
 
-// OpenDB opens (or creates) the SQLite database at dbFile.
+// InventoryDB wraps *sql.DB and provides safe transaction helpers.
 //
-// Ensures the inventory table exists and initializes the
-// auto-increment sequence if missing.
+// Users do not need to work with *sql.DB directly.
+type InventoryDB struct {
+	db *sql.DB
+}
+
+// NewInventoryDB opens or creates the database and returns InventoryDB.
 //
-// Returns an open *sql.DB handle.
+// Ensures the table exists, sequence is initialized.
+// Returns a ready-to-use InventoryDB wrapper.
+//
+// Usage:
+//
+//	inv := NewInventoryDB("inventory.db")
+//
+// Notes:
+// - Underlying connection is stored in inv.db
+// - Close() must be called when finished
+// - Table creation is idempotent
+func NewInventoryDB(dbFile string) *InventoryDB {
+	db := OpenDB(dbFile)
+	return &InventoryDB{db: db}
+}
+
+// WithTransaction executes the given function inside a transaction.
+//
+// Usage:
+//
+//	err := inv.WithTransaction(func(tx Execer) error {
+//	    err := AddItem(tx, item)
+//	    if err != nil {
+//	        return err
+//	    }
+//	    return AppendRemarksEntry(tx, item.ID, "added new")
+//	})
+//
+// If fn() returns error:
+// - Transaction is rolled back
+//
+// If fn() returns nil:
+// - Transaction is committed
+//
+// Notes:
+// - Use for any group of changes that must be atomic
+// - If the DB fails, returns error
+func (inv *InventoryDB) WithTransaction(
+	fn func(tx Execer) error) error {
+
+	tx, err := inv.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx failed: %v", err)
+	}
+
+	err = fn(tx)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("commit tx failed: %v", err)
+	}
+
+	return nil
+}
+
+// DB returns the underlying *sql.DB (for read-only queries).
+// Use only when needed, e.g. for GetItemByID.
+func (inv *InventoryDB) DB() *sql.DB {
+	return inv.db
+}
+
+// Close closes the underlying database connection.
+func (inv *InventoryDB) Close() error {
+	return inv.db.Close()
+}
+
+// OpenDB opens or creates the SQLite database file at dbFile path.
+//
+// It ensures that the 'inventory' table exists with the required fields:
+// - id          INTEGER PRIMARY KEY AUTOINCREMENT
+// - description TEXT
+// - location    TEXT
+// - status      TEXT
+// - remarks     TEXT
+//
+// It also ensures that the autoincrement sequence is initialized:
+// - If the sequence is missing, sets it to IndexStart.
+//
+// Usage:
+//
+//	db := OpenDB("inventory.db")
+//
+// Notes:
+// - Returns a *sql.DB connection (ready to use)
+// - Fails fatally if the database cannot be opened or schema is invalid
+// - Table creation is idempotent (safe to call multiple times)
+// - Auto-increment starts from IndexStart (default 1000)
 func OpenDB(dbFile string) *sql.DB {
 	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
@@ -134,10 +228,31 @@ func AppendItem(exec Execer, item Item) error {
 	return nil
 }
 
-// AppendRemarksEntry appends a timestamped entry to remarks.
+// AppendRemarksEntry appends a new log entry to the item's
+// remarks field, using the standard timestamp format.
 //
-// The new line format is:
-// [YYYY-MM-DD HH:MM] message
+// The entry is formatted as:
+//
+//	[YYYY-MM-DD HH:MM] message
+//
+// This function uses SQL to append without loading
+// the entire remarks field:
+//
+//	SET remarks = COALESCE(remarks, '') || char(10) || ?
+//
+// Usage:
+//
+//	err := AppendRemarksEntry(tx, 1002, "replaced battery")
+//
+// Resulting remarks field:
+//
+//	(previous remarks)
+//	[2025-06-20 16:55] replaced battery
+//
+// Notes:
+// - Does not modify other fields (description, location, status)
+// - If item ID does not exist, no rows are updated
+// - Use when you only want to add an audit/log entry
 func AppendRemarksEntry(exec Execer, id int, message string) error {
 	t := gen.BST().Format("2006-01-02 15:04")
 	formatted := fmt.Sprintf("[%s] %s", t, message)
