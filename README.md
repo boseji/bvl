@@ -22,7 +22,32 @@
 
 [![GitHub license](https://img.shields.io/github/license/boseji/bvl)](LICENSE.txt)
 
-Easy to use and useful stock, goods and materials handling software designed in `Golang`.
+Easy to use and useful stock, goods and materials handling software designed in `Golang` and a prototype in _Python_.
+
+Simple GPLv2 CLI tool to manage inventory with `SQLite`, `CSV` import/export and logging.
+
+## Features
+
+- Command Line Interface for operating the tool.
+- Support for CSV import and export
+- Easy to use interface to list, add, edit and delete items from inventory.
+- Multi-platform and easy migration.
+
+## Database Schema
+
+| Field       | Type    | Notes                                    |
+| ----------- | ------- | ---------------------------------------- |
+| id          | INTEGER | Primary key, starts at 1001              |
+| description | TEXT    | Long description of item                 |
+| location    | TEXT    | Location of the item                     |
+| status      | TEXT    | Current status (Available, In Use, etc.) |
+| remarks     | TEXT    | Remarks or logging field                 |
+
+Easy way to create the SQLite database:
+
+```sh
+sqlite3 inventory.db < migrations/migration.sql
+```
 
 ## License
 
