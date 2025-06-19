@@ -47,7 +47,9 @@ package inventory
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -61,4 +63,27 @@ func OpenDB(dbFile string) *sql.DB {
 	// TODO: Add Pre-processing Steps
 
 	return db
+}
+
+func ListAllItems(db *sql.DB) {
+	rows, err := db.Query("SELECT id, description, location, status, remarks" +
+		" FROM inventory ORDER BY id")
+	if err != nil {
+		log.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-5s %-40s %-25s %-15s %s\n", "ID", "Description",
+		"Location", "Status", "Remarks")
+	fmt.Println(strings.Repeat("-", 110))
+	for rows.Next() {
+		var item Item
+		err := rows.Scan(&item.ID, &item.Description, &item.Location,
+			&item.Status, &item.Remarks)
+		if err != nil {
+			log.Fatalf("Scan failed: %v", err)
+		}
+		fmt.Printf("%-5d %-40s %-25s %-15s %s\n", item.ID, item.Description,
+			item.Location, item.Status, item.Remarks)
+	}
 }
