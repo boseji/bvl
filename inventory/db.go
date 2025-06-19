@@ -43,6 +43,17 @@
 //  Please visit <https://spdx.org/licenses/GPL-2.0-only.html> for details.
 //
 
+// DB Access Layer
+//
+// Provides database access functions for Inventory CLI.
+// All "write" functions accept an Execer interface to support transactions.
+//
+// Conventions:
+// - Line width <= 80 characters
+// - All errors lowercase, no punctuation
+// - Documentation is verbose
+//
+
 package inventory
 
 import (
@@ -53,24 +64,31 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// IndexStart defines the starting value for auto-incremented IDs.
 const (
 	// Starting value of the Index
 	IndexStart = 1000
 )
 
+// Execer defines something that can Exec SQL.
+// Both *sql.DB and *sql.Tx implement this.
+type Execer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
 // OpenDB opens (or creates) the SQLite database at dbFile.
 //
-// It ensures the inventory table is created, and initializes the
-// sequence to 1000 if missing.
+// Ensures the inventory table exists and initializes the
+// auto-increment sequence if missing.
 //
 // Returns an open *sql.DB handle.
 func OpenDB(dbFile string) *sql.DB {
 	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		log.Fatalf("failed to open database: %v", err)
 	}
 
-	// Create the DB if It does not exists
+	// Create the inventory table if not present
 	_, err = db.Exec(`
     CREATE TABLE IF NOT EXISTS inventory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,185 +99,90 @@ func OpenDB(dbFile string) *sql.DB {
     );
     `)
 	if err != nil {
-		log.Fatalf("Failed to create table: %v", err)
+		log.Fatalf("failed to create table: %v", err)
 	}
 
-	// Generate Query:
-	// INSERT INTO sqlite_sequence (name, seq)
-	// SELECT 'inventory', 1000
-	// WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'inventory')
-	queryStr := "INSERT INTO sqlite_sequence (name, seq)" +
-		fmt.Sprintf("SELECT 'inventory', %d", IndexStart) +
-		"WHERE NOT EXISTS (" +
-		"SELECT 1 FROM sqlite_sequence WHERE name = 'inventory')"
-
-	// Create the Index start if one does not exists
-	_, err = db.Exec(queryStr)
+	// Initialize sequence only if not already set
+	_, err = db.Exec(`
+    INSERT INTO sqlite_sequence (name, seq)
+    SELECT 'inventory', ?
+    WHERE NOT EXISTS (
+        SELECT 1 FROM sqlite_sequence WHERE name = 'inventory'
+    );`, IndexStart)
 	if err != nil {
-		log.Printf("Note: could not init sequence: %v", err)
+		log.Printf("could not init sequence: %v", err)
 	}
 
 	return db
 }
 
-// GetItemByID returns a single Item by its ID.
+// AppendItem inserts a new item if it does not exist,
+// or replaces an existing item with the same ID.
 //
-// If not found, returns an error.
-func GetItemByID(db *sql.DB, id int) (Item, error) {
-	var item Item
-	row := db.QueryRow(`
-        SELECT id, description, location, status, remarks
-        FROM inventory WHERE id = ?`, id)
-	err := row.Scan(
-		&item.ID, &item.Description, &item.Location,
-		&item.Status, &item.Remarks)
+// Works with both *sql.DB and *sql.Tx.
+func AppendItem(exec Execer, item Item) error {
+	_, err := exec.Exec(`
+        INSERT OR REPLACE INTO inventory
+        (id, description, location, status, remarks)
+        VALUES (?, ?, ?, ?, ?)`,
+		item.ID, item.Description, item.Location,
+		item.Status, item.Remarks)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return item, fmt.Errorf("Item %d not found", id)
-		}
-		return item, fmt.Errorf("query failed: %v", err)
+		return fmt.Errorf("insert or replace failed: %v", err)
 	}
-	return item, nil
+	return nil
 }
 
-// SearchItems performs full-text search across:
-// Description, Location, Status.
-//
-// Returns all matching Items.
-func SearchItems(db *sql.DB, search string) ([]Item, error) {
-	like := "%" + search + "%"
-	rows, err := db.Query(`
-        SELECT id, description, location, status, remarks
-        FROM inventory
-        WHERE description LIKE ?
-           OR location LIKE ?
-           OR status LIKE ?
-        ORDER BY id`, like, like, like)
+// AddItem inserts a new item. The ID is auto-assigned.
+func AddItem(exec Execer, item Item) error {
+	_, err := exec.Exec(`
+        INSERT INTO inventory
+        (description, location, status, remarks)
+        VALUES (?, ?, ?, ?)`,
+		item.Description, item.Location,
+		item.Status, item.Remarks)
 	if err != nil {
-		return nil, fmt.Errorf("search query failed: %v", err)
+		return fmt.Errorf("insert failed: %v", err)
 	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(
-			&item.ID, &item.Description, &item.Location,
-			&item.Status, &item.Remarks)
-		if err != nil {
-			return nil, fmt.Errorf("scan failed: %v", err)
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return nil
 }
 
-// SearchByDescription returns Items where description LIKE search.
-func SearchByDescription(db *sql.DB, search string) ([]Item, error) {
-	like := "%" + search + "%"
-	rows, err := db.Query(`
-        SELECT id, description, location, status, remarks
-        FROM inventory
-        WHERE description LIKE ?
-        ORDER BY id`, like)
+// EditItem updates all fields of the item with the given ID.
+func EditItem(exec Execer, item Item) error {
+	_, err := exec.Exec(`
+        UPDATE inventory
+        SET description = ?, location = ?,
+            status = ?, remarks = ?
+        WHERE id = ?`,
+		item.Description, item.Location,
+		item.Status, item.Remarks, item.ID)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"search by description failed: %v", err)
+		return fmt.Errorf("update failed: %v", err)
 	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description,
-			&item.Location, &item.Status, &item.Remarks)
-		if err != nil {
-			return nil, fmt.Errorf("scan failed: %v", err)
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return nil
 }
 
-// SearchByLocation returns Items where location LIKE search.
-func SearchByLocation(db *sql.DB, search string) ([]Item, error) {
-	like := "%" + search + "%"
-	rows, err := db.Query(`
-        SELECT id, description, location, status, remarks
-        FROM inventory
-        WHERE location LIKE ?
-        ORDER BY id`, like)
+// DeleteItem deletes a row from inventory by ID.
+func DeleteItem(exec Execer, id int) error {
+	_, err := exec.Exec(`
+        DELETE FROM inventory
+        WHERE id = ?`, id)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"search by location failed: %v", err)
+		return fmt.Errorf("delete failed: %v", err)
 	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description,
-			&item.Location, &item.Status, &item.Remarks)
-		if err != nil {
-			return nil, fmt.Errorf("scan failed: %v", err)
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return nil
 }
 
-// SearchByStatus returns Items where status LIKE search.
-func SearchByStatus(db *sql.DB, search string) ([]Item, error) {
-	like := "%" + search + "%"
-	rows, err := db.Query(`
-        SELECT id, description, location, status, remarks
-        FROM inventory
-        WHERE status LIKE ?
-        ORDER BY id`, like)
+// ResetSequence resets the auto-increment index to IndexStart.
+func ResetSequence(exec Execer) error {
+	_, err := exec.Exec(`
+        UPDATE sqlite_sequence
+        SET seq = ?
+        WHERE name = 'inventory'`, IndexStart)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"search by status failed: %v", err)
+		return fmt.Errorf("reset sequence failed: %v", err)
 	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description,
-			&item.Location, &item.Status, &item.Remarks)
-		if err != nil {
-			return nil, fmt.Errorf("scan failed: %v", err)
-		}
-		items = append(items, item)
-	}
-	return items, nil
-}
-
-// SearchByRemarks returns Items where remarks LIKE search.
-func SearchByRemarks(db *sql.DB, search string) ([]Item, error) {
-	like := "%" + search + "%"
-	rows, err := db.Query(`
-        SELECT id, description, location, status, remarks
-        FROM inventory
-        WHERE remarks LIKE ?
-        ORDER BY id`, like)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"search by remarks failed: %v", err)
-	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description,
-			&item.Location, &item.Status, &item.Remarks)
-		if err != nil {
-			return nil, fmt.Errorf("scan failed: %v", err)
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return nil
 }
 
 // ListAll returns all items from the inventory table,
@@ -270,8 +193,7 @@ func SearchByRemarks(db *sql.DB, search string) ([]Item, error) {
 func ListAll(db *sql.DB) ([]Item, error) {
 	rows, err := db.Query(`
         SELECT id, description, location, status, remarks
-        FROM inventory
-        ORDER BY id`)
+        FROM inventory ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %v", err)
 	}
@@ -283,12 +205,29 @@ func ListAll(db *sql.DB) ([]Item, error) {
 		err := rows.Scan(&item.ID, &item.Description,
 			&item.Location, &item.Status, &item.Remarks)
 		if err != nil {
-			return nil, fmt.Errorf("qcan failed: %v", err)
+			return nil, fmt.Errorf("scan failed: %v", err)
 		}
 		items = append(items, item)
 	}
-
 	return items, nil
+}
+
+// GetItemByID returns a single item with the given ID.
+func GetItemByID(db *sql.DB, id int) (Item, error) {
+	var item Item
+	row := db.QueryRow(`
+        SELECT id, description, location, status, remarks
+        FROM inventory WHERE id = ?`, id)
+	err := row.Scan(
+		&item.ID, &item.Description,
+		&item.Location, &item.Status, &item.Remarks)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return item, fmt.Errorf("item %d not found", id)
+		}
+		return item, fmt.Errorf("query failed: %v", err)
+	}
+	return item, nil
 }
 
 // ListItemsPaged returns up to limit Items,
@@ -376,75 +315,4 @@ func (it *ItemIterator) Next() (Item, bool, error) {
 // Close closes the iterator.
 func (it *ItemIterator) Close() error {
 	return it.rows.Close()
-}
-
-// AddItem inserts a new Item.
-func AddItem(db *sql.DB, item Item) error {
-	_, err := db.Exec(`
-        INSERT INTO inventory
-        (description, location, status, remarks)
-        VALUES (?, ?, ?, ?)`,
-		item.Description, item.Location,
-		item.Status, item.Remarks)
-	if err != nil {
-		return fmt.Errorf("insert failed: %v", err)
-	}
-	return nil
-}
-
-// EditItem updates an existing Item.
-func EditItem(db *sql.DB, item Item) error {
-	_, err := db.Exec(`
-        UPDATE inventory
-        SET description = ?, location = ?,
-            status = ?, remarks = ?
-        WHERE id = ?`,
-		item.Description, item.Location,
-		item.Status, item.Remarks, item.ID)
-	if err != nil {
-		return fmt.Errorf("update failed: %v", err)
-	}
-	return nil
-}
-
-// AppendItem inserts a new item if it does not exist,
-// or replaces an existing item with the same ID.
-//
-// Used by JSON import, CSV import and CLI.
-func AppendItem(db *sql.DB, item Item) error {
-	_, err := db.Exec(`
-        INSERT OR REPLACE INTO inventory
-        (id, description, location, status, remarks)
-        VALUES (?, ?, ?, ?, ?)`,
-		item.ID, item.Description,
-		item.Location, item.Status, item.Remarks)
-	if err != nil {
-		return fmt.Errorf(
-			"insert or replace failed: %v", err)
-	}
-	return nil
-}
-
-// DeleteItem deletes an Item by ID.
-func DeleteItem(db *sql.DB, id int) error {
-	_, err := db.Exec(`
-        DELETE FROM inventory
-        WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("delete failed: %v", err)
-	}
-	return nil
-}
-
-// ResetSequence sets the ID auto-increment
-// to restart from 1001.
-func ResetSequence(db *sql.DB) error {
-	_, err := db.Exec(
-		fmt.Sprintf("UPDATE sqlite_sequence"+
-			"SET seq = %d"+
-			"WHERE name = 'inventory'", IndexStart))
-	if err != nil {
-		return fmt.Errorf("reset sequence failed: %v", err)
-	}
-	return nil
 }
