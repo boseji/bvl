@@ -26,6 +26,8 @@ Easy to use and useful stock, goods and materials handling software designed in 
 
 Simple GPLv2 CLI tool to manage inventory with `SQLite`, `CSV` import/export and logging.
 
+---
+
 ## Features
 
 - Command Line Interface for operating the tool.
@@ -48,6 +50,19 @@ Easy way to create the SQLite database:
 ```sh
 sqlite3 inventory.db < migrations/migration.sql
 ```
+
+Index Reset:
+
+```sql
+-- Initialize AUTOINCREMENT sequence to start at 1001
+DELETE FROM sqlite_sequence WHERE name = 'inventory';
+INSERT INTO sqlite_sequence (name, seq) VALUES ('inventory', 1000);
+```
+
+This count `1000` starts the first entry from `1001`.
+The same can be varied to generate a different initial value.
+
+---
 
 ## License
 
@@ -75,3 +90,29 @@ SPDX-License-Identifier: `GPL-2.0-only`
 Full Name: `GNU General Public License v2.0 only`
 
 Please visit <https://spdx.org/licenses/GPL-2.0-only.html> for details.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## How to Contribute
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Code of Conduct
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+
+---
+
+## Attribution
+
+This project was developed in collaboration with [ChatGPT 4o model](https://openai.com/chatgpt/overview/).
+
+---
