@@ -52,33 +52,45 @@ import (
 	"os"
 )
 
-// ExportCSV writes all inventory items to CSV file.
+// ExportCSV writes all inventory records to a CSV file.
 //
-// Fields:
-// id, description, location, status, remarks
+// Usage:
 //
-// Returns error if writing fails.
+//	err := ExportCSV(db, "inventory.csv")
+//
+// The CSV will have the following columns:
+//
+//	id, description, location, status, remarks
+//
+// Existing file will be overwritten.
+//
+// Returns error if file cannot be written or query fails.
 func ExportCSV(db *sql.DB, filename string) error {
-	items, err := ListAll(db)
+	file, err := os.Create(filename)
 	if err != nil {
-		return fmt.Errorf("export csv failed: %v", err)
+		return fmt.Errorf("create csv failed: %v", err)
 	}
+	defer file.Close()
 
-	f, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("could not create file: %v", err)
-	}
-	defer f.Close()
-
-	writer := csv.NewWriter(f)
+	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	header := []string{
-		"id", "description", "location", "status", "remarks",
+	header := []string{"id", "description", "location", "status", "remarks"}
+	if err := writer.Write(header); err != nil {
+		return fmt.Errorf("write csv header failed: %v", err)
 	}
-	writer.Write(header)
 
-	for _, item := range items {
+	rows, err := db.Query(`SELECT id, description, location, status, remarks FROM inventory ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("query inventory failed: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item Item
+		if err := rows.Scan(&item.ID, &item.Description, &item.Location, &item.Status, &item.Remarks); err != nil {
+			return fmt.Errorf("scan failed: %v", err)
+		}
 		record := []string{
 			fmt.Sprintf("%d", item.ID),
 			item.Description,
@@ -86,99 +98,116 @@ func ExportCSV(db *sql.DB, filename string) error {
 			item.Status,
 			item.Remarks,
 		}
-		writer.Write(record)
+		if err := writer.Write(record); err != nil {
+			return fmt.Errorf("write csv row failed: %v", err)
+		}
 	}
 
-	fmt.Printf("exported %d items to %s\n", len(items), filename)
 	return nil
 }
 
-// ImportCSV reads inventory items from CSV file.
+// ImportCSV reads inventory records from a CSV file and imports them.
 //
-// Existing records with same ID will be replaced.
-// CSV must have same field order as exported.
+// Existing records with matching IDs will be replaced.
 //
-// Returns error if reading fails.
-func ImportCSV(db *sql.DB, filename string) error {
-	f, err := os.Open(filename)
+// Usage:
+//
+//	err := ImportCSV(db, "inventory.csv")
+//
+// CSV format must have columns:
+//
+//	id, description, location, status, remarks
+//
+// Each row is imported using AppendItem().
+//
+// Returns error on file error, parse error, or DB error.
+func ImportCSV(exec Execer, filename string) error {
+	file, err := os.Open(filename)
 	if err != nil {
-		return fmt.Errorf("could not open file: %v", err)
+		return fmt.Errorf("open csv failed: %v", err)
 	}
-	defer f.Close()
+	defer file.Close()
 
-	reader := csv.NewReader(f)
-	records, err := reader.ReadAll()
+	reader := csv.NewReader(file)
+	rows, err := reader.ReadAll()
 	if err != nil {
-		return fmt.Errorf("could not read csv: %v", err)
+		return fmt.Errorf("read csv failed: %v", err)
 	}
 
-	if len(records) < 1 {
-		return fmt.Errorf("csv is empty")
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("transaction failed: %v", err)
-	}
-
-	for i, row := range records {
+	for i, row := range rows {
 		if i == 0 {
-			continue // skip header
+			continue
+		}
+		if len(row) != 5 {
+			return fmt.Errorf("csv row %d has wrong column count", i)
 		}
 
-		if len(row) < 5 {
-			tx.Rollback()
-			return fmt.Errorf(
-				"invalid csv row %d: expected 5 fields", i)
-		}
+		var item Item
+		fmt.Sscanf(row[0], "%d", &item.ID)
+		item.Description = row[1]
+		item.Location = row[2]
+		item.Status = row[3]
+		item.Remarks = row[4]
 
-		_, err := tx.Exec(`
-            INSERT OR REPLACE INTO inventory
-            (id, description, location, status, remarks)
-            VALUES (?, ?, ?, ?, ?)`,
-			row[0], row[1], row[2], row[3], row[4])
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf(
-				"import failed at row %d: %v", i, err)
+		if err := AppendItem(exec, item); err != nil {
+			return fmt.Errorf("import row %d failed: %v", i, err)
 		}
 	}
 
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("commit failed: %v", err)
-	}
-
-	fmt.Printf(
-		"imported %d items from %s\n", len(records)-1, filename)
 	return nil
 }
 
-// ViewCSV displays CSV file to stdout.
+// ViewCSV prints the content of a CSV file to stdout.
 //
-// No database required.
-// Useful for debugging or piping to jq.
+// Usage:
+//
+//	err := ViewCSV("inventory.csv")
+//
+// The output is formatted as columns:
+//
+//	id  description  location  status  remarks
+//
+// Errors are returned if the file cannot be read.
 func ViewCSV(filename string) error {
-	f, err := os.Open(filename)
+	file, err := os.Open(filename)
 	if err != nil {
-		return fmt.Errorf("could not open file: %v", err)
+		return fmt.Errorf("open csv failed: %v", err)
 	}
-	defer f.Close()
+	defer file.Close()
 
-	reader := csv.NewReader(f)
-	records, err := reader.ReadAll()
+	reader := csv.NewReader(file)
+	rows, err := reader.ReadAll()
 	if err != nil {
-		return fmt.Errorf("could not read csv: %v", err)
+		return fmt.Errorf("read csv failed: %v", err)
 	}
 
-	for i, row := range records {
-		if i == 0 {
-			fmt.Println("--- CSV Header ---")
-		}
-		fmt.Printf("%d: %s\n", i, row)
+	for _, row := range rows {
+		fmt.Printf("%-5s %-20s %-15s %-15s %-s\n", row[0], row[1], row[2], row[3], row[4])
 	}
 
-	fmt.Printf(
-		"displayed %d rows from %s\n", len(records), filename)
 	return nil
+}
+
+// ExportCSV writes all inventory records to CSV using InventoryDB.
+//
+// Usage:
+//
+//	err := inv.ExportCSV("inventory.csv")
+//
+// Same as ExportCSV() raw.
+func (inv *InventoryDB) ExportCSV(filename string) error {
+	return ExportCSV(inv.db, filename)
+}
+
+// ImportCSV imports inventory records from CSV using InventoryDB.
+//
+// Usage:
+//
+//	err := inv.ImportCSV("inventory.csv")
+//
+// The import runs inside a transaction.
+func (inv *InventoryDB) ImportCSV(filename string) error {
+	return inv.WithTransaction(func(tx Execer) error {
+		return ImportCSV(tx, filename)
+	})
 }
