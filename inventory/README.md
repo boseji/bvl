@@ -30,7 +30,72 @@ Simple GPLv2 CLI tool to manage inventory with `SQLite`, `CSV` import/export and
 
 ## `inventory` Package for Inventory DB Implementation in Golang
 
+### Core
 
+* InventoryDB wrapper — safe, transactional DB access
+* In-memory or file-based SQLite support
+* Configurable sequence start (`IndexStart`)
+
+### Data Model
+
+* `Item` struct — ID, Description, Location, Status, Remarks (with `FormatRemarks()`)
+* `FormatRemarks()` — consistent timestamped remarks
+* JSON tags — for web/app/API compatibility
+
+### Database Operations
+
+* `AddItem()`
+* `EditItem()`
+* `DeleteItem()`
+* `AppendItem()`
+* `AppendRemarksEntry()`
+* `GetItemByID()`
+* `ListAll()`
+* `ListItemsPaged()` — with pagination
+* `NewItemIterator()` — with streaming Next()
+* `ResetSequence()`
+
+### CSV Support
+
+* `ExportCSV()`
+* `ImportCSV()`
+* `ViewCSV()`
+* InventoryDB wrappers
+* CLI-friendly and Excel-friendly CSV format
+
+### JSON Support
+
+* `ExportJSON()`
+* `ImportJSON()`
+* `ViewJSON()`
+* `ExportJSONToString()`
+* `ImportJSONFromString()`
+* InventoryDB wrappers
+* Web/Electron/API/jq friendly JSON format
+
+### Item JSON Helpers
+
+* `Item.ToJSON()`
+* `Item.FromJSON()`
+
+### Test Suite
+
+* `db_test.go` — core DB functions
+* `inventorydb_test.go` — InventoryDB methods
+* `csv_test.go` — CSV
+* `json_test.go` — JSON
+* Full error path coverage
+* Rollback scenarios covered
+
+### Ready for:
+
+* CLI tools
+* Web frontends
+* Electron apps
+* REST APIs
+* jq pipelines
+* Automation scripts
+* CI/CD integration
 
 ---
 
