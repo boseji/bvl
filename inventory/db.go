@@ -208,7 +208,7 @@ func AppendRemarksEntry(exec Execer, id int, message string) error {
 	// char(10) → newline character
 	// '||' → SQLite concat
 	// Result: remarks = old + '\n' + new entry
-	_, err := exec.Exec(`
+	res, err := exec.Exec(`
         UPDATE inventory
         SET remarks = 
             COALESCE(remarks, '') || char(10) || ?
@@ -216,6 +216,11 @@ func AppendRemarksEntry(exec Execer, id int, message string) error {
 		formatted, id)
 	if err != nil {
 		return fmt.Errorf("append to remarks failed: %v", err)
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return fmt.Errorf("append failed: no such ID %d", id)
 	}
 	return nil
 }
