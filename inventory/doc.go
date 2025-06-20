@@ -44,55 +44,89 @@
 //
 
 // Package inventory provides a complete inventory management layer
-// for use with SQLite databases.
+// for use with SQLite databases. It has with full CRUD support,
+// with CSV/JSON import/export, and ready-to-use CLI and web features.
 //
-// The package defines the InventoryDB type as a convenient wrapper
-// around *sql.DB and exposes transaction-safe methods for adding,
-// editing, deleting, listing, and querying inventory records.
+//	बी.वी.एल - बोसजी के द्वारा रचित भंडार लेखांकन हेतु तन्त्राक्ष्।
 //
-// Inventory records include:
+// =============================================
 //
-//   - id (auto-increment primary key)
-//   - description (text)
-//   - location (text)
-//   - status (text)
-//   - remarks (append-only log)
+// एक सुगम एवं उपयोगी भंडार संचालन हेतु तन्त्राक्ष्।
 //
-// The remarks field acts as an audit log with timestamped entries.
+// एक रचनात्मक भारतीय उत्पाद ।
 //
-// Usage:
+// bvl - Boseji's Inventory Management Program
 //
-//	inv := inventory.NewInventoryDB("inventory.db")
-//	defer inv.Close()
+// # Package inventory
 //
-//	err := inv.AppendItem(item)
-//	item, err := inv.GetItemByID(1234)
-//	items, err := inv.ListAll()
+// Core Features:
 //
-// Transactions:
+// - InventoryDB wrapper: safe, transactional DB access
+// - In-memory / file SQLite support
+// - Configurable sequence start (IndexStart)
 //
-// For grouped writes, use:
+// Data Model:
 //
-//	err := inv.WithTransaction(func(tx inventory.Execer) error {
-//	    return inventory.AppendItem(tx, item)
-//	})
+//   - Item struct:
+//     ID, Description, Location, Status, Remarks (with FormatRemarks)
+//   - FormatRemarks(): consistent timestamped remarks
+//   - JSON tags for web/app/API compatibility
 //
-// Iteration:
+// Database Operations:
 //
-//	iter, err := inv.NewItemIterator("WHERE status = ?", "Operational")
-//	defer iter.Close()
-//	for {
-//	    item, ok, err := iter.Next()
-//	    if err != nil || !ok { break }
-//	    fmt.Println(item.ID, item.Description)
-//	}
+// - AddItem()
+// - EditItem()
+// - DeleteItem()
+// - AppendItem()
+// - AppendRemarksEntry()
+// - GetItemByID()
+// - ListAll()
+// - ListItemsPaged() with pagination
+// - NewItemIterator() with streaming Next()
+// - ResetSequence()
 //
-// Conventions:
+// CSV Support:
 //
-// - All methods are documented with usage examples
-// - All error messages are lowercase
-// - Line width is limited to 80 characters for clarity
-// - Remarks field is append-only for audit trail
+// - ExportCSV()
+// - ImportCSV()
+// - ViewCSV()
+// - InventoryDB wrappers
+// - CLI-friendly and Excel-friendly format
+//
+// JSON Support:
+//
+// - ExportJSON()
+// - ImportJSON()
+// - ViewJSON()
+// - ExportJSONToString()
+// - ImportJSONFromString()
+// - InventoryDB wrappers
+// - CLI-friendly, Web API-ready format
+// - jq / Web / Electron compatibility
+//
+// Item JSON helpers:
+//
+// - Item.ToJSON()
+// - Item.FromJSON()
+//
+// Test Suite:
+//
+// - db_test.go: core DB functions
+// - inventorydb_test.go: InventoryDB methods
+// - csv_test.go: CSV
+// - json_test.go: JSON
+// - All error paths covered
+// - Rollback scenarios covered
+//
+// Ready for:
+//
+// - CLI tools
+// - Web frontends
+// - Electron apps
+// - REST APIs
+// - jq pipelines
+// - Automation scripts
+// - CI/CD integration
 //
 // License:
 //
