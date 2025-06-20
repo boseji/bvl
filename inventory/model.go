@@ -43,16 +43,38 @@
 //  Please visit <https://spdx.org/licenses/GPL-2.0-only.html> for details.
 //
 
+//
+// Model definition for Inventory CLI
+//
+
 package inventory
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/boseji/bsg/gen"
 )
 
-// Item stores each row in the Database
+// Item represents an inventory record.
+//
+// Fields:
+//
+//	ID          - auto-increment primary key
+//	Description - free text
+//	Location    - free text
+//	Status      - free text
+//	Remarks     - audit log, may contain timestamped entries
+//
+// The Remarks field is typically maintained using FormatRemarks()
+// to ensure consistent timestamp format.
+//
+// Example:
+//
+//	[2025-06-21 14:30] installed new battery
+//
+// The Item struct is used across all DB, CSV, and JSON functions.
 type Item struct {
 	ID          int    `json:"id"`
 	Description string `json:"description"`
@@ -61,28 +83,38 @@ type Item struct {
 	Remarks     string `json:"remarks"`
 }
 
-// FormatRemarks returns the remarks text formatted
-// with timestamp-style per line.
+var reLogPrefix = regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]`)
+
+// FormatRemarks returns the Remarks field formatted as:
+//
+//	[YYYY-MM-DD HH:MM] <remarks>
+//
+// If Remarks is already formatted (starts with timestamp),
+// it returns Remarks unchanged.
+//
+// If Remarks is blank, returns only timestamp prefix.
+//
+// Usage:
+//
+//	formatted := item.FormatRemarks()
+//
+// This function is used by AddItem(), AppendItem(), EditItem()
+// to ensure Remarks field is consistent.
 //
 // Example output:
-// [2025-06-20 16:22] message one
-// [2025-06-21 09:15] message two
+//
+//	"[2025-06-21 15:00] installed UPS"
 func (item *Item) FormatRemarks() string {
-	lines := []string{}
-	for _, line := range strings.Split(item.Remarks, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			// already formatted
-			lines = append(lines, line)
-		} else {
-			// add timestamp prefix
-			t := gen.BST().Format("2006-01-02 15:04")
-			formatted := fmt.Sprintf("[%s] %s", t, line)
-			lines = append(lines, formatted)
-		}
+	ts := gen.BST().Format("2006-01-02 15:04")
+	r := strings.TrimSpace(item.Remarks)
+
+	if r == "" {
+		return fmt.Sprintf("[%s] ", ts)
 	}
-	return strings.Join(lines, "\n")
+
+	if reLogPrefix.MatchString(r) {
+		return item.Remarks
+	}
+
+	return fmt.Sprintf("[%s] %s", ts, r)
 }
