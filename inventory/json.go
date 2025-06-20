@@ -43,184 +43,275 @@
 //  Please visit <https://spdx.org/licenses/GPL-2.0-only.html> for details.
 //
 
+//
+// JSON import/export/view functions for Inventory CLI
+// Provides both raw DB and InventoryDB methods
+// Ready for Web, Electron, CLI, jq integration
+//
+
 package inventory
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
-// ExportJSONFile would allow the full database to be exported as a JSON file
-func ExportJSONFile(db *sql.DB, jsonFile string) {
-	rows, err := db.Query("SELECT id, description, location, status, remarks FROM inventory ORDER BY id")
+// ExportJSON writes all inventory records to a JSON file.
+//
+// The output JSON is an array of Item objects:
+//
+//	[
+//	  { "id": 1001, "description": "UPS", "location": "Rack 1", ... },
+//	  { ... },
+//	  ...
+//	]
+//
+// Usage:
+//
+//	err := ExportJSON(db, "inventory.json")
+//
+// Example:
+//
+//	// Export inventory to file
+//	err := inventory.ExportJSON(db, "export.json")
+//
+// Errors:
+//   - returns error if database query fails
+//   - returns error if JSON marshal fails
+//   - returns error if file cannot be written (permission, path)
+func ExportJSON(db *sql.DB, filename string) error {
+	items, err := ListAll(db)
 	if err != nil {
-		log.Fatalf("Query failed: %v", err)
-	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description, &item.Location, &item.Status, &item.Remarks)
-		if err != nil {
-			log.Fatalf("Scan failed: %v", err)
-		}
-		items = append(items, item)
+		return fmt.Errorf("export json failed: %v", err)
 	}
 
 	data, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
-		log.Fatalf("JSON marshal failed: %v", err)
+		return fmt.Errorf("marshal json failed: %v", err)
 	}
 
-	err = os.WriteFile(jsonFile, data, 0644)
+	err = os.WriteFile(filename, data, 0644)
 	if err != nil {
-		log.Fatalf("Failed to write JSON file: %v", err)
-	}
-
-	fmt.Printf("Exported %d items to %s\n", len(items), jsonFile)
-}
-
-// ImportJSONFile can be used to Import a set of records into the database
-// using a .JSON file.
-func ImportJSONFile(db *sql.DB, jsonFile string) {
-	data, err := os.ReadFile(jsonFile)
-	if err != nil {
-		log.Fatalf("Failed to read JSON file: %v", err)
-	}
-
-	var items []Item
-	err = json.Unmarshal(data, &items)
-	if err != nil {
-		log.Fatalf("JSON unmarshal failed: %v", err)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatalf("Transaction failed: %v", err)
-	}
-
-	for _, item := range items {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO inventory (id, description, location, status, remarks)
-            VALUES (?, ?, ?, ?, ?)`, item.ID, item.Description, item.Location, item.Status, item.Remarks)
-		if err != nil {
-			log.Fatalf("Import failed for item %d: %v", item.ID, err)
-		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		log.Fatalf("Commit failed: %v", err)
-	}
-
-	fmt.Printf("Imported %d items from %s\n", len(items), jsonFile)
-}
-
-// ExportJSONstr allows to export the complete database as a JSON string.
-func ExportJSONstr(db *sql.DB) (string, error) {
-	rows, err := db.Query("SELECT id, description, location, status, remarks" +
-		" FROM inventory ORDER BY id")
-	if err != nil {
-		return "", fmt.Errorf("query failed: %v", err)
-	}
-	defer rows.Close()
-
-	var items []Item
-	for rows.Next() {
-		var item Item
-		err := rows.Scan(&item.ID, &item.Description, &item.Location,
-			&item.Status, &item.Remarks)
-		if err != nil {
-			return "", fmt.Errorf("scan failed: %v", err)
-		}
-		items = append(items, item)
-	}
-
-	data, err := json.MarshalIndent(items, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("JSON marshal failed: %v", err)
-	}
-
-	return string(data), nil
-}
-
-// ImportJSONstr helps to import a bulk of Records from a JSON array
-// supplied as a string.
-func ImportJSONstr(db *sql.DB, jsonStr string) error {
-	var items []Item
-	err := json.Unmarshal([]byte(jsonStr), &items)
-	if err != nil {
-		return fmt.Errorf("JSON unmarshal failed: %v", err)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("transaction failed: %v", err)
-	}
-
-	for _, item := range items {
-		_, err := tx.Exec("INSERT OR REPLACE INTO inventory ("+
-			"id, description, location, status, remarks)"+
-			"VALUES (?, ?, ?, ?, ?)",
-			item.ID, item.Description, item.Location, item.Status, item.Remarks)
-		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("import failed for item %d: %v", item.ID, err)
-		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("commit failed: %v", err)
+		return fmt.Errorf("write json failed: %v", err)
 	}
 
 	return nil
 }
 
-// ExportJSONByID finds outputs a JSON sting for a given ID value of the
-// Database provided it exists.
-func ExportJSONByID(db *sql.DB, id int) (string, error) {
-	var item Item
-	row := db.QueryRow("SELECT id, description, location, status, remarks"+
-		" FROM inventory WHERE id = ?", id)
-	err := row.Scan(&item.ID, &item.Description, &item.Location, &item.Status,
-		&item.Remarks)
+// ImportJSON reads inventory records from a JSON file and imports them.
+//
+// Existing records with matching IDs will be replaced.
+//
+// Usage:
+//
+//	err := ImportJSON(exec, "inventory.json")
+//
+// Example:
+//
+//	// Import from JSON
+//	err := inventory.ImportJSON(inv, "import.json")
+//
+// Errors:
+//   - returns error if file read fails
+//   - returns error if JSON unmarshal fails
+//   - returns error if individual Insert/Replace fails
+func ImportJSON(exec Execer, filename string) error {
+	data, err := os.ReadFile(filename)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("Item with ID %d not found", id)
-		}
-		return "", fmt.Errorf("query failed: %v", err)
+		return fmt.Errorf("read json failed: %v", err)
 	}
 
+	return ImportJSONFromBytes(exec, data)
+}
+
+// ViewJSON pretty prints the content of a JSON file to stdout.
+//
+// Usage:
+//
+//	err := ViewJSON("inventory.json")
+//
+// Example:
+//
+//	err := inventory.ViewJSON("export.json")
+//
+// Useful for:
+//   - CLI debugging
+//   - Inspection
+//   - jq pipelines
+//
+// Errors:
+//   - returns error if file read fails
+//   - returns error if JSON is invalid
+func ViewJSON(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("read json failed: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := json.Indent(&out, data, "", "  "); err != nil {
+		return fmt.Errorf("format json failed: %v", err)
+	}
+
+	fmt.Println(out.String())
+	return nil
+}
+
+// ExportJSONToString returns all inventory records as a JSON string.
+//
+// Usage:
+//
+//	jsonStr, err := ExportJSONToString(db)
+//
+// Example:
+//
+//	jsonStr, err := inventory.ExportJSONToString(db)
+//
+// Useful for:
+//   - Web API response
+//   - Electron UI
+//   - jq processing
+//   - CLI --json flag
+func ExportJSONToString(db *sql.DB) (string, error) {
+	items, err := ListAll(db)
+	if err != nil {
+		return "", fmt.Errorf("export json string failed: %v", err)
+	}
+
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal json failed: %v", err)
+	}
+
+	return string(data), nil
+}
+
+// ImportJSONFromString reads inventory records from a JSON string.
+//
+// Existing records with matching IDs will be replaced.
+//
+// Usage:
+//
+//	err := ImportJSONFromString(exec, jsonString)
+//
+// Example:
+//
+//	err := inventory.ImportJSONFromString(inv, jsonPayload)
+//
+// Errors:
+//   - returns error if JSON is invalid
+//   - returns error if DB insert fails
+func ImportJSONFromString(exec Execer, jsonString string) error {
+	return ImportJSONFromBytes(exec, []byte(jsonString))
+}
+
+// ImportJSONFromBytes helper
+func ImportJSONFromBytes(exec Execer, data []byte) error {
+	var items []Item
+
+	if err := json.Unmarshal(data, &items); err != nil {
+		return fmt.Errorf("unmarshal json failed: %v", err)
+	}
+
+	for i, item := range items {
+		if err := AppendItem(exec, item); err != nil {
+			return fmt.Errorf("import item %d failed: %v", i, err)
+		}
+	}
+
+	return nil
+}
+
+// ToJSON returns this Item as a JSON string.
+//
+// Usage:
+//
+//	jsonStr, err := item.ToJSON()
+//
+// Example output:
+//
+//	{
+//	  "id": 1001,
+//	  "description": "UPS",
+//	  "location": "Rack 1",
+//	  "status": "Operational",
+//	  "remarks": "[2025-06-21 15:00] installed UPS"
+//	}
+//
+// Useful for:
+//   - Logging
+//   - CLI --json
+//   - Websocket events
+//   - API single-item
+func (item *Item) ToJSON() (string, error) {
 	data, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("JSON marshal failed: %v", err)
+		return "", fmt.Errorf("marshal item json failed: %v", err)
 	}
-
 	return string(data), nil
 }
 
-// ImportJSONRecord helps to add or modify a row in database. This is
-// done on the basis of the supplied ID value.
-func ImportJSONRecord(db *sql.DB, jsonStr string) error {
-	var item Item
-	err := json.Unmarshal([]byte(jsonStr), &item)
-	if err != nil {
-		return fmt.Errorf("JSON unmarshal failed: %v", err)
-	}
+// FromJSON parses a JSON string into this Item.
+//
+// Usage:
+//
+//	var item Item
+//	err := item.FromJSON(jsonStr)
+//
+// Example:
+//
+//	var item Item
+//	err := item.FromJSON(`{"id":1001,"description":"UPS"}`)
+//
+// Errors:
+//   - returns error if JSON is invalid
+func (item *Item) FromJSON(jsonStr string) error {
+	return json.Unmarshal([]byte(jsonStr), item)
+}
 
-	_, err = db.Exec("INSERT OR REPLACE INTO inventory ("+
-		"id, description, location, status, remarks)"+
-		"VALUES (?, ?, ?, ?, ?)",
-		item.ID, item.Description, item.Location, item.Status, item.Remarks)
-	if err != nil {
-		return fmt.Errorf("insert/update failed for item %d: %v", item.ID, err)
-	}
+// InventoryDB method: ExportJSON
+//
+// Usage:
+//
+//	err := inv.ExportJSON("inventory.json")
+func (inv *InventoryDB) ExportJSON(filename string) error {
+	return ExportJSON(inv.db, filename)
+}
 
-	return nil
+// InventoryDB method: ImportJSON
+//
+// Usage:
+//
+//	err := inv.ImportJSON("inventory.json")
+//
+// Runs inside transaction.
+func (inv *InventoryDB) ImportJSON(filename string) error {
+	return inv.WithTransaction(func(tx Execer) error {
+		return ImportJSON(tx, filename)
+	})
+}
+
+// InventoryDB method: ExportJSONToString
+//
+// Usage:
+//
+//	jsonStr, err := inv.ExportJSONToString()
+func (inv *InventoryDB) ExportJSONToString() (string, error) {
+	return ExportJSONToString(inv.db)
+}
+
+// InventoryDB method: ImportJSONFromString
+//
+// Usage:
+//
+//	err := inv.ImportJSONFromString(jsonString)
+//
+// Runs inside transaction.
+func (inv *InventoryDB) ImportJSONFromString(jsonString string) error {
+	return inv.WithTransaction(func(tx Execer) error {
+		return ImportJSONFromString(tx, jsonString)
+	})
 }
