@@ -207,6 +207,33 @@ func (inv *InventoryDB) ResetSequence() error {
 	})
 }
 
+// GetItemByID wraps GetItemByID.
+//
+// Usage:
+//
+//	item, err := inv.GetItemByID(id)
+func (inv *InventoryDB) GetItemByID(id int) (Item, error) {
+	return GetItemByID(inv.db, id)
+}
+
+// ListAll wraps ListAll.
+//
+// Usage:
+//
+//	items, err := inv.ListAll()
+func (inv *InventoryDB) ListAll() ([]Item, error) {
+	return ListAll(inv.db)
+}
+
+// ListItemsPaged wraps ListItemsPaged.
+//
+// Usage:
+//
+//	items, err := inv.ListItemsPaged(afterID, limit)
+func (inv *InventoryDB) ListItemsPaged(afterID int, limit int) ([]Item, error) {
+	return ListItemsPaged(inv.db, afterID, limit)
+}
+
 // NewItemIterator returns an ItemIterator for scanning records
 // with an optional WHERE clause.
 //
