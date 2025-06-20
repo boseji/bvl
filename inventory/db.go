@@ -65,97 +65,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// IndexStart defines the starting value for auto-incremented IDs.
-const (
-	// Starting value of the Index
-	IndexStart = 1000
-)
-
-// Execer defines something that can Exec SQL.
-// Both *sql.DB and *sql.Tx implement this.
-type Execer interface {
-	Exec(query string, args ...interface{}) (sql.Result, error)
-}
-
-// InventoryDB wraps *sql.DB and provides safe transaction helpers.
-//
-// Users do not need to work with *sql.DB directly.
-type InventoryDB struct {
-	db *sql.DB
-}
-
-// NewInventoryDB opens or creates the database and returns InventoryDB.
-//
-// Ensures the table exists, sequence is initialized.
-// Returns a ready-to-use InventoryDB wrapper.
-//
-// Usage:
-//
-//	inv := NewInventoryDB("inventory.db")
-//
-// Notes:
-// - Underlying connection is stored in inv.db
-// - Close() must be called when finished
-// - Table creation is idempotent
-func NewInventoryDB(dbFile string) *InventoryDB {
-	db := OpenDB(dbFile)
-	return &InventoryDB{db: db}
-}
-
-// WithTransaction executes the given function inside a transaction.
-//
-// Usage:
-//
-//	err := inv.WithTransaction(func(tx Execer) error {
-//	    err := AddItem(tx, item)
-//	    if err != nil {
-//	        return err
-//	    }
-//	    return AppendRemarksEntry(tx, item.ID, "added new")
-//	})
-//
-// If fn() returns error:
-// - Transaction is rolled back
-//
-// If fn() returns nil:
-// - Transaction is committed
-//
-// Notes:
-// - Use for any group of changes that must be atomic
-// - If the DB fails, returns error
-func (inv *InventoryDB) WithTransaction(
-	fn func(tx Execer) error) error {
-
-	tx, err := inv.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx failed: %v", err)
-	}
-
-	err = fn(tx)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("commit tx failed: %v", err)
-	}
-
-	return nil
-}
-
-// DB returns the underlying *sql.DB (for read-only queries).
-// Use only when needed, e.g. for GetItemByID.
-func (inv *InventoryDB) DB() *sql.DB {
-	return inv.db
-}
-
-// Close closes the underlying database connection.
-func (inv *InventoryDB) Close() error {
-	return inv.db.Close()
-}
-
 // OpenDB opens or creates the SQLite database file at dbFile path.
 //
 // It ensures that the 'inventory' table exists with the required fields:
@@ -211,10 +120,46 @@ func OpenDB(dbFile string) *sql.DB {
 	return db
 }
 
-// AppendItem inserts a new item if it does not exist,
-// or replaces an existing item with the same ID.
+// AppendItem inserts or replaces an item in the inventory table,
+// using the provided ID. If an item with the same ID already exists,
+// it will be replaced with the new values.
 //
-// Works with both *sql.DB and *sql.Tx.
+// The remarks field is processed through item.FormatRemarks()
+// to ensure consistent timestamped formatting.
+//
+// Typical usage:
+//
+//	item := Item{
+//	    ID:          1234,
+//	    Description: "UPS 3KVA",
+//	    Location:    "Rack 5",
+//	    Status:      "Operational",
+//	    Remarks:     "installed new unit",
+//	}
+//	err := AppendItem(tx, item)
+//
+// Resulting record:
+//
+//	id          = 1234
+//	description = "UPS 3KVA"
+//	location    = "Rack 5"
+//	status      = "Operational"
+//	remarks     = "[2025-06-20 12:30] installed new unit"
+//
+// Use cases:
+//
+// - To update an existing record fully (replace)
+// - To insert a new record with known ID
+// - To bulk insert/update items
+//
+// Notes:
+//
+// - Safe to call repeatedly with the same item
+// - Will replace existing record (INSERT OR REPLACE)
+// - Does not check for ID conflicts beyond replacement
+// - Remarks field will always be formatted via FormatRemarks()
+// - If ID is not set, use AddItem() instead
+// - Works with both *sql.DB and *sql.Tx.
 func AppendItem(exec Execer, item Item) error {
 	_, err := exec.Exec(`
         INSERT OR REPLACE INTO inventory
@@ -253,6 +198,7 @@ func AppendItem(exec Execer, item Item) error {
 // - Does not modify other fields (description, location, status)
 // - If item ID does not exist, no rows are updated
 // - Use when you only want to add an audit/log entry
+// - Works with both *sql.DB and *sql.Tx.
 func AppendRemarksEntry(exec Execer, id int, message string) error {
 	t := gen.BST().Format("2006-01-02 15:04")
 	formatted := fmt.Sprintf("[%s] %s", t, message)
@@ -298,6 +244,7 @@ func AppendRemarksEntry(exec Execer, id int, message string) error {
 // - If used inside a transaction, pass tx as exec
 // - If using plain db connection, pass db as exec
 // - Remarks will always follow consistent format
+// - Works with both *sql.DB and *sql.Tx.
 func AddItem(exec Execer, item Item) error {
 	_, err := exec.Exec(`
         INSERT INTO inventory
@@ -345,6 +292,7 @@ func AddItem(exec Execer, item Item) error {
 // - If used inside transaction (tx), pass tx as exec
 // - To append a single new log entry, use AppendRemarksEntry()
 // - To display remarks nicely, use item.FormatRemarks()
+// - Works with both *sql.DB and *sql.Tx.
 func EditItem(exec Execer, item Item) error {
 	_, err := exec.Exec(`
         UPDATE inventory
@@ -362,7 +310,32 @@ func EditItem(exec Execer, item Item) error {
 	return nil
 }
 
-// DeleteItem deletes a row from inventory by ID.
+// DeleteItem removes a record from the inventory table by ID.
+//
+// If the specified ID does not exist, the operation is a no-op
+// (no error is returned).
+//
+// Typical usage:
+//
+//	err := inv.DeleteItem(1234)
+//
+// Result:
+//
+// - If item with id = 1234 exists → record is deleted
+// - If no such item → nothing is done, no error
+//
+// Use cases:
+//
+// - To permanently remove an inventory record
+// - To clean up old or duplicate items
+// - To reset part of the inventory manually
+//
+// Notes:
+//
+// - This is a destructive operation (cannot be undone)
+// - Should typically be logged via remarks before use
+// - Use AppendRemarksEntry() if you want an audit trail before delete
+// - Works with both *sql.DB and *sql.Tx.
 func DeleteItem(exec Execer, id int) error {
 	_, err := exec.Exec(`
         DELETE FROM inventory
@@ -373,7 +346,34 @@ func DeleteItem(exec Execer, id int) error {
 	return nil
 }
 
-// ResetSequence resets the auto-increment index to IndexStart.
+// ResetSequence wraps ResetSequence with automatic transaction.
+//
+// Resets the auto-increment sequence for the inventory table
+// back to IndexStart (default: 1000).
+//
+// Typically used after manually clearing records, or for test setups.
+//
+// Usage:
+//
+//	err := inv.ResetSequence()
+//
+// Result:
+//
+// - Sets the internal sqlite_sequence counter for 'inventory' table
+// - Next inserted record will use ID = IndexStart + 1
+//
+// Use cases:
+//
+// - After deleting all items (clear inventory)
+// - For test environments to reset IDs
+// - To reinitialize an empty database
+//
+// Notes:
+//
+// - Does not delete records (use DeleteItem or manual purge first)
+// - Safe to call multiple times
+// - Has no effect if records still exist with higher IDs
+// - Works with both *sql.DB and *sql.Tx.
 func ResetSequence(exec Execer) error {
 	_, err := exec.Exec(`
         UPDATE sqlite_sequence
@@ -385,11 +385,41 @@ func ResetSequence(exec Execer) error {
 	return nil
 }
 
-// ListAll returns all items from the inventory table,
-// ordered by ID. This is a simple bulk fetch function.
+// ListAll returns all items in the inventory table, sorted by ID.
 //
-// Use cautiously for very large databases. For pagination,
-// use ListItemsPaged() or ItemIterator().
+// This is a read-only operation. It does not require a transaction.
+// It can be used for reporting, exporting, or displaying all items.
+//
+// Usage:
+//
+//	items, err := inv.ListAll()
+//	if err != nil {
+//	    // handle error
+//	}
+//	for _, item := range items {
+//	    fmt.Println(item.ID, item.Description, item.Status)
+//	}
+//
+// Result:
+//
+// - Returns []Item containing all inventory records
+// - Sorted by id ASC (oldest first)
+//
+// Use cases:
+//
+// - To display the full inventory
+// - To export data to CSV, JSON
+// - For reports or dashboards
+//
+// Notes:
+//
+//   - If the table is empty, returns an empty slice (no error)
+//   - The remarks field will be returned in raw form
+//     (use item.FormatRemarks() for display)
+//   - This method does not paginate large inventories
+//     (use ListItemsPaged for that)
+//   - Use cautiously for very large databases. For pagination,
+//     use ListItemsPaged() or ItemIterator().
 func ListAll(db *sql.DB) ([]Item, error) {
 	rows, err := db.Query(`
         SELECT id, description, location, status, remarks
@@ -412,7 +442,38 @@ func ListAll(db *sql.DB) ([]Item, error) {
 	return items, nil
 }
 
-// GetItemByID returns a single item with the given ID.
+// GetItemByID returns a single item from the inventory table
+// that matches the given ID.
+//
+// If no item is found with the given ID, returns an error:
+//
+//	"item <id> not found"
+//
+// Typical usage:
+//
+//	item, err := inv.GetItemByID(1234)
+//	if err != nil {
+//	    // handle error (not found, or query error)
+//	} else {
+//	    fmt.Println(item.Description, item.Status)
+//	}
+//
+// Result:
+//
+// - If item exists → returns populated Item struct
+// - If not found → returns zero-value Item + error
+//
+// Use cases:
+//
+// - To display or edit a specific inventory item
+// - To retrieve details for audit or reporting
+// - To check existence of an item by ID
+//
+// Notes:
+//
+//   - This is a read-only query (no transaction needed)
+//   - The remarks field is returned as raw string
+//     (use item.FormatRemarks() for formatted display)
 func GetItemByID(db *sql.DB, id int) (Item, error) {
 	var item Item
 	row := db.QueryRow(`
@@ -430,10 +491,37 @@ func GetItemByID(db *sql.DB, id int) (Item, error) {
 	return item, nil
 }
 
-// ListItemsPaged returns up to limit Items,
-// starting after given ID (afterID).
+// ListItemsPaged returns a slice of items after a given starting ID,
+// up to a specified limit.
 //
-// Useful for paging through large inventories.
+// This is a read-only operation. It does not require a transaction.
+//
+// Usage:
+//
+//	items, err := inv.ListItemsPaged(lastID, 10)
+//	if err != nil {
+//	    // handle error
+//	}
+//	for _, item := range items {
+//	    fmt.Printf("%d: %s\n", item.ID, item.Description)
+//	}
+//
+// Result:
+//
+// - Returns up to 'limit' number of items with id > afterID
+// - Results are sorted by id ASC
+//
+// Use cases:
+//
+// - For paging through large inventories
+// - For implementing UI pagination
+// - For batch export or processing
+//
+// Notes:
+//
+// - If no items match the query, returns an empty slice
+// - Use afterID = 0 to start from beginning
+// - If fewer than 'limit' items remain, returns as many as available
 func ListItemsPaged(
 	db *sql.DB, afterID int, limit int) ([]Item, error) {
 
@@ -460,59 +548,4 @@ func ListItemsPaged(
 		items = append(items, item)
 	}
 	return items, nil
-}
-
-// ItemIterator streams matching records one-by-one.
-//
-// Provides: Next(), Close().
-type ItemIterator struct {
-	rows *sql.Rows
-}
-
-// NewItemIterator creates an iterator matching WHERE clause.
-//
-// Example:
-//
-//	it, err := NewItemIterator(db, "WHERE status LIKE ?", "%Available%")
-func NewItemIterator(
-	db *sql.DB, whereClause string, args ...interface{},
-) (*ItemIterator, error) {
-
-	query := `
-        SELECT id, description, location, status, remarks
-        FROM inventory `
-	if whereClause != "" {
-		query += whereClause
-	}
-	query += " ORDER BY id"
-
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("iterator query failed: %v", err)
-	}
-
-	return &ItemIterator{rows: rows}, nil
-}
-
-// Next returns next Item from iterator.
-//
-// ok=false when no more rows.
-// Always call Close() after use.
-func (it *ItemIterator) Next() (Item, bool, error) {
-	var item Item
-	if it.rows.Next() {
-		err := it.rows.Scan(
-			&item.ID, &item.Description, &item.Location,
-			&item.Status, &item.Remarks)
-		if err != nil {
-			return item, false, fmt.Errorf("iterator scan failed: %v", err)
-		}
-		return item, true, nil
-	}
-	return item, false, nil
-}
-
-// Close closes the iterator.
-func (it *ItemIterator) Close() error {
-	return it.rows.Close()
 }
